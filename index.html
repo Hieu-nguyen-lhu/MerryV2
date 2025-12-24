@@ -144,6 +144,17 @@
         let state = 'TREE'; 
         let selectedIndex = 0;
         let handX = 0.5;
+        // Smoothing history để giảm jitter và rotationOffset để hỗ trợ drag/keyboard
+        let handHistory = [];
+        const HAND_HISTORY_MAX = 6;
+        let smoothedHandX = 0.5;
+        let rotationOffset = 0; // bổ sung do drag/keyboard
+        let isPointerDown = false;
+        let lastPointerX = 0;
+        // Sensitivity tuning --- tăng để xoay trái/phải nhạy hơn
+        const POINTER_SENSITIVITY = 0.014; // tăng từ 0.006 -> 0.014
+        const KEYBOARD_ROT_DELTA = 0.5; // tăng từ 0.25 -> 0.5
+        const HAND_SENSITIVITY = 7.6; // scale hand mapping to allow stronger rotation
 
         // ==========================================
         // 3. Vandiep
@@ -312,7 +323,8 @@
                 }
             } else {
                 group.scale.set(1,1,1);
-                group.rotation.y += (handRotY - group.rotation.y) * 0.05;
+                // Tăng responsiveness một chút để xoay theo tay/mouse nhanh hơn
+                group.rotation.y += (handRotY - group.rotation.y) * 0.12;
             }
         }
 
@@ -321,7 +333,10 @@
             requestAnimationFrame(animate);
             const time = Date.now() * 0.001;
             const speed = 0.06;
-            const handRotY = (handX - 0.5) * 2.5;
+
+            // Map smoothed hand X to a wider rotation range (-PI..PI) and apply HAND_SENSITIVITY
+            const baseHandRot = (smoothedHandX - 0.5) * Math.PI * 2 * HAND_SENSITIVITY; // scaled
+            const handRotY = baseHandRot + rotationOffset;
 
             // Chỉ cập nhật vị trí (vòng lặp nặng) mỗi 3 frame để giảm CPU
             __frameCounter++;
@@ -410,7 +425,13 @@
 
                 if(results.multiHandLandmarks.length > 0) {
                     const lm = results.multiHandLandmarks[0];
-                    handX = lm[9].x; 
+                    // Push raw handX into history then compute smoothed value to reduce jitter
+                    const rawX = lm[9].x;
+                    handHistory.push(rawX);
+                    if (handHistory.length > HAND_HISTORY_MAX) handHistory.shift();
+                    let sum = 0; for (let v of handHistory) sum += v;
+                    smoothedHandX = sum / handHistory.length;
+                    handX = smoothedHandX; // backward-compat
 
                     const tips = [8,12,16,20];
                     const wrist = lm[0];
@@ -443,6 +464,29 @@
                 }, width: 160, height: 120, fps: 15
             });
             cameraUtils.start();
+
+            // --- Pointer drag to rotate support ---
+            try {
+                const el = renderer.domElement;
+                el.style.touchAction = 'none';
+                el.addEventListener('pointerdown', (e) => {
+                    isPointerDown = true; lastPointerX = e.clientX; el.setPointerCapture(e.pointerId);
+                });
+                el.addEventListener('pointermove', (e) => {
+                    if (!isPointerDown) return;
+                    const dx = e.clientX - lastPointerX;
+                    rotationOffset += dx * POINTER_SENSITIVITY;
+                    lastPointerX = e.clientX;
+                });
+                el.addEventListener('pointerup', (e) => { isPointerDown = false; try{ el.releasePointerCapture(e.pointerId); }catch{} });
+                el.addEventListener('pointercancel', () => { isPointerDown = false; });
+            } catch (e) { console.warn('Pointer events not available', e); }
+
+            // Keyboard controls (left/right) to nudge rotation
+            window.addEventListener('keydown', (ev) => {
+                if (ev.key === 'ArrowLeft') rotationOffset -= KEYBOARD_ROT_DELTA;
+                else if (ev.key === 'ArrowRight') rotationOffset += KEYBOARD_ROT_DELTA;
+            });
         }
 
         window.addEventListener('resize', () => {
